@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 
-load_dotenv("../esp32/.env")
+load_dotenv()
 
 MQTT_BROKER = os.getenv("MQTT_BROKER")
 MQTT_BROKER_PORT = 1883
@@ -197,93 +197,91 @@ templates = Jinja2Templates(directory="templates")
 
 
 
-@app.post("/read")
-def get_single_reading():
-    """
-    Request a single thermal reading from the ESP32.
-    
-    Sends "read" command via MQTT and waits for the ESP32 to respond
-    with thermal data in JSON format.
-    """
+@app.get("/", response_class=HTMLResponse)
+def root(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
-    global thermal_data, latest_thermal_data
-    # TODO: Send "read" command and return thermal_data (handle None case)
-    mqtt_client.publish(MQTT_COMMAND_TOPIC, "read")
-    time.sleep(0.5)
-    if thermal_data:
-        latest_thermal_data = thermal_data
-        return JSONResponse(
-            status_code=200,
-            content=json.loads(latest_thermal_data),
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    ws_clients.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()   # keep connection alive
+    except WebSocketDisconnect:
+        ws_clients.remove(websocket)
+
+VALID_COMMANDS = {"get_one", "start_continuous", "stop"}
+
+@app.post("/api/command")
+def send_command(body: CommandIn):
+    if body.command not in VALID_COMMANDS:
+        raise HTTPException(status_code=400, detail=f"Unknown command: {body.command}")
+    if mqtt_client:
+        mqtt_client.publish(MQTT_COMMAND_TOPIC, json.dumps({"command": body.command}))
+        print(f"[CMD] → {body.command}")
+    return {"status": "ok", "command": body.command}
+
+@app.post("/api/readings")
+def create_reading(body: ReadingIn, conn=Depends(get_db)):
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT IGNORE INTO devices (mac_address) VALUES (%s)",
+        (body.mac_address,)
+    )
+    cursor.execute(
+        """INSERT INTO readings
+           (mac_address, thermistor_temp, prediction, confidence, pixels)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (body.mac_address, body.thermistor,
+         body.prediction.upper(), body.confidence,
+         json.dumps(body.pixels))
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    cursor.close()
+    return {"id": new_id}
+
+
+@app.get("/api/readings")
+def get_readings(device_mac: Optional[str] = None, conn=Depends(get_db)):
+    cursor = conn.cursor(dictionary=True)
+    if device_mac:
+        cursor.execute(
+            "SELECT * FROM readings WHERE mac_address = %s ORDER BY id DESC",
+            (device_mac,)
         )
     else:
-        return JSONResponse(
-            status_code=504,
-            content={"error": "Waiting for ESP32 response", "message": "ESP32 has not responded yet! Please wait a moment and try again."}
-        )
+        cursor.execute("SELECT * FROM readings ORDER BY id DESC")
+    rows = cursor.fetchall()
+    cursor.close()
+    for row in rows:
+        row["pixels"]     = json.loads(row["pixels"])
+        row["created_at"] = str(row["created_at"])
+    return rows
 
+@app.delete("/api/readings/{reading_id}")
+def delete_reading(reading_id: int, conn=Depends(get_db)):
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM readings WHERE id = %s", (reading_id,))
+    conn.commit()
+    deleted = cursor.rowcount
+    cursor.close()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Reading not found")
+    return {"status": "deleted", "id": reading_id}
 
-@app.get("/pixel")
-def get_pixel_value(index: int):
-    """
-    Get a specific pixel temperature value from a fresh reading.
-    
-    Query parameter:
-    - index (0-63): Pixel index in the 8x8 thermal array
-    
-    """
-    global thermal_data, latest_thermal_data
-    # TODO: Validate index, check thermal_data exists, and return pixel value
-    if (index > 63) or (index < 0): 
-        return JSONResponse(
-                status_code=400,
-                content={"error": f"Index must be on range (0-63), input = {str(index)}"}
-            )
-    mqtt_client.publish(MQTT_COMMAND_TOPIC, "read")
-    time.sleep(0.5)
-    if thermal_data:
-        latest_thermal_data = thermal_data
-        data = json.loads(latest_thermal_data)
-        pixels = data["pixels"]
-
-        return {"index": index, "temperature": float(pixels[index])}
-    else:
-        return JSONResponse(
-            status_code=504,
-            content={"error": "Waiting for ESP32 response", "message": "ESP32 has not responded yet! Please wait a moment and try again."}
-        )
-        
-    
-
-@app.get("/thermal_graph")
-def get_thermal_graph():
-    """
-    Get a thermal heatmap visualization with fresh thermal data.
-    
-    Triggers a new reading from the ESP32 and returns a PNG image 
-    showing the 8x8 thermal grid as a heatmap.
-    Refer to README.md for more details. 
-    Use generate_temp_plot from visualize_temp.py to generate the thermal graph.
-    Remember to return the StreamingResponse object.
-    Remember to use the global variable `thermal_data` to generate the thermal graph.
-    The data should is already validated correctly against the Pydantic model.
-    """
-    # TODO (BONUS): Trigger reading and return PNG thermal heatmap
-
-@app.get("/")
-def root():
-    """Health check endpoint"""
-    return {
-        "status": "webserver is running",
-        "service": "AMG8833 Thermal Camera Server",
-        "mqtt_broker": MQTT_BROKER,
-        "mqtt_topic": MQTT_TOPIC,
-        "endpoints": {
-            "POST /read": "Get a single thermal reading (64 pixels)",
-            "GET /pixel?index=N": "Get specific pixel temperature by index (0-63)",
-            "GET /thermal_graph": "Get thermal heatmap image (PNG)",
-        }
-    }
+@app.get("/api/devices")
+def get_devices(conn=Depends(get_db)):
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM devices ORDER BY id")
+    devices = cursor.fetchall()
+    cursor.close()
+    for d in devices:
+        d["created_at"] = str(d["created_at"])
+    return devices
 
 if __name__ == "__main__":
-    uvicorn.run("temperature_webserver:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+ ### MAybe ###
