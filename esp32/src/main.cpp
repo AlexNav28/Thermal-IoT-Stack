@@ -18,6 +18,9 @@
 #include <WiFi.h>
 #include "ECE140_WIFI.h"
 
+#include <string.h>
+#include <ArduinoJson.h>
+
 
 //Wifi Credentials
 const char* ucsdUsername = UCSD_USERNAME;
@@ -33,6 +36,9 @@ const char* TOPIC_PREFIX = MQTT_TOPIC;
 
 ECE140_MQTT mqtt(CLIENT_ID, TOPIC_PREFIX);
 ECE140_WIFI wifi;
+
+bool dataRequested = false; 
+bool automatic = false;
 
 
 // Thermal camara config
@@ -233,6 +239,53 @@ float runInference(float scaled_features[N_FEATURES]) {
     return confidence;
 }
 
+// #### MQTT implementation ####
+// Send data funciton
+void sendData(){
+    
+    amg.readPixels(pixels);  
+    float thermistor = amg.readThermistor();
+    
+    computeFeatures(pixels, features);
+    float confidence = runInference(features);
+    const char* prediction = (confidence >= 0.5f) ? "PRESENT" : "EMPTY";
+
+
+    JsonDocument doc;
+    doc["mac_address"] = wifi.macAddress();
+    JsonArray pixelsArr = doc["pixels"].to<JsonArray>();
+    for (int i = 0; i < AMG88xx_PIXEL_ARRAY_SIZE; i++){
+        pixelsArr.add(pixels[i]);
+    }
+    doc["thermistor"] = thermistor;
+    doc["prediction"] = prediction;
+    doc["confidence"] = confidence;
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+    mqtt.publishMessage(TOPIC_PREFIX, jsonString);
+}
+
+// MQTT callback
+void mqttCallback(char* topic, uint8_t* payload, unsigned int length){
+    String message = "";
+    for (unsigned int i = 0; i < length; i++) {
+        message += (char)payload[i];
+    }
+
+    Serial.print("[MQTT] Received: ");
+    Serial.println(message);
+
+    if(message == "get_one"){
+        dataRequested = true;
+    } else if (message == "start_continuous") {
+        automatic = true;
+    } else if (message == "stop") {
+        automatic = false;
+        dataRequested = false;
+    } else {Serial.println("Unknown command!");}
+
+}
 
 
 void setup() {
@@ -259,6 +312,8 @@ void setup() {
 
     //MQTT 
     mqtt.connectToBroker();
+     mqtt.setCallback(mqttCallback);          
+    mqtt.subscribe("command");
 
     // TFLite setup
     setupModel();
@@ -269,6 +324,21 @@ void setup() {
 // WiFi.macAddress() returns a string of the MAC address (required for the assignment)
 
 void loop() {
-    Serial.println(WiFi.macAddress());
-    delay(5000);
+   mqtt.loop();
+
+   // MQTT 
+   if (dataRequested){
+        sendData();
+        dataRequested = false;
+   }
+
+   if (automatic) {
+    unsigned long currentTime = millis();
+    if (currentTime - lastPublish >= 1000) {
+        sendData();
+        lastPublish = currentTime;
+    }
+    
+   }
+
 }
