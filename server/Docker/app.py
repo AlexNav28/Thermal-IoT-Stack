@@ -17,9 +17,6 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 
-
-
-
 load_dotenv("../esp32/.env")
 
 MQTT_BROKER = os.getenv("MQTT_BROKER")
@@ -57,6 +54,37 @@ def get_db():
     finally:
         conn.close()
 
+# Websocket 
+
+ws_clients: list[WebSocket] = []
+latest_id:  int | None = None
+latest_mac: str | None = None
+
+async def broadcast_frames():
+    global latest_id, latest_mac
+    while True:
+        if latest_id is not None and ws_clients:
+
+            # Only send MAC + id — not the full row
+            notification = {
+                "event":       "new_reading",
+                "mac_address": latest_mac,
+                "id":          latest_id
+            }
+
+            latest_id  = None
+            latest_mac = None
+
+            # Notify all connected browsers
+            for client in list(ws_clients):
+                try:
+                    await client.send_json(notification)
+                except Exception:
+                    ws_clients.remove(client)
+
+        await asyncio.sleep(0.1) 
+
+
 # MQTT implementation
 
 def on_connect(client, userdata, flags, rc):
@@ -66,35 +94,86 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_message(client, userdata, msg):
-    global thermal_data
+    global latest_id, latest_mac
     data = msg.payload.decode()
     print(f"[Received MQTT message] {data}")
     
     try:
         json_data = json.loads(data)
-        validated_data = ReadingIn(**json_data)
+        reading = ReadingIn(**json_data)
 
     except Exception as e:
         print(f"[MQTT] Parse error: {e}")
         return
         
     try:
-        conn = 
-        
-    except json.JSONDecodeError as e:
-        print(f"[Validation Error] Invalid JSON format: {e}")
-    except ValidationError as e:
-        print(f"[Validation Error] Data does not match required format:")
-        print(e)
+        conn   = mysql.connector.connect(
+            host=os.environ["DB_HOST"], user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"], database=os.environ["DB_NAME"]
+        )
+        cursor = conn.cursor()
+
+        cursor.execute (
+            "INSERT IGNORE INTO devices (mac_address) VALUES (%s)",
+            (reading.mac_address,)
+        )
+
+        cursor.execute(
+            """INSERT INTO readings
+               (mac_address, thermistor_temp, prediction, confidence, pixels)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (reading.mac_address, reading.thermistor,
+             reading.prediction.upper(), reading.confidence,
+             json.dumps(reading.pixels))
+        )
+
+        conn.commit()
+        new_id = cursor.lastrowid
+        cursor.close()
+        conn.close()
+        print(f"[DB] Saved reading id={new_id}")
+
+    except Exception as e:
+        print(f"[DB] Insert error: {e}")
+        return
+    
+    # Store prev iformation
+    latest_id = new_id
+    latest_mac = reading.mac_address
+         
 
 # Initialize MQTT client
 mqtt_client = mqtt.Client()
-mqtt_client.on_connect = on_connect # <- Don't forget to implement the on_connect function!
+mqtt_client.on_connect = on_connect 
 mqtt_client.on_message = on_message
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+    for _ in range(30):
+        try:
+            conn = mysql.connector.connect(
+            host=os.environ["DB_HOST"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"],
+            database=os.environ["DB_NAME"]
+            )
+            cursor = conn.cursor()
+            with open("init.sql") as f:
+                for statement in f.read().split(";"):
+                    statement = statement.strip()
+                    if statement:
+                        cursor.execute(statement)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            print("[DB] Tables initialised")
+            break
+        except mysql.connector.Error:
+            print("[DB] Waiting for MySQL..")
+            time.sleep(1)
+
     if MQTT_BROKER:
         mqtt_client.connect(MQTT_BROKER, MQTT_BROKER_PORT, 60)
         mqtt_client.loop_start()
@@ -102,12 +181,19 @@ async def lifespan(app: FastAPI):
     else:
         print("Warning: MQTT_BROKER not configured")
 
+    asyncio.create_task(broadcast_frames()) 
+    print("[WS] broadcast_frames task started")
+ 
     yield 
     
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
 
 app = FastAPI(lifespan=lifespan)
+templates = Jinja2Templates(directory="templates")
+
+### SEEMS the End of how to construct the backend of the API ####
+# Need to fix and ask some tasks of how the verificaiton of data is suppose to happen 
 
 
 
