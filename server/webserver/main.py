@@ -57,32 +57,25 @@ def get_db():
 # Websocket 
 
 ws_clients: list[WebSocket] = []
-latest_id:  int | None = None
-latest_mac: str | None = None
+latest_reading: dict | None = None
+
 
 async def broadcast_frames():
-    global latest_id, latest_mac
+    global latest_reading
     while True:
-        if latest_id is not None and ws_clients:
-
-            # Only send MAC + id — not the full row
-            notification = {
-                "event":       "new_reading",
-                "mac_address": latest_mac,
-                "id":          latest_id
-            }
-
-            latest_id  = None
-            latest_mac = None
-
-            # Notify all connected browsers
+        if latest_reading is not None and ws_clients:
+            payload = latest_reading
+            latest_reading = None
+            dead = []
             for client in list(ws_clients):
                 try:
-                    await client.send_json(notification)
+                    await client.send_json(payload)
                 except Exception:
-                    ws_clients.remove(client)
-
-        await asyncio.sleep(0.1) 
+                    dead.append(client)
+            for c in dead:
+                if c in ws_clients:
+                    ws_clients.remove(c)
+        await asyncio.sleep(0.1)
 
 
 # MQTT implementation
@@ -94,52 +87,53 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_message(client, userdata, msg):
-    global latest_id, latest_mac
-    data = msg.payload.decode()
-    print(f"[Received MQTT message] {data}")
-    
+    global latest_reading
     try:
-        json_data = json.loads(data)
-        reading = ReadingIn(**json_data)
-
+        json_data = json.loads(msg.payload.decode())
+        reading   = ReadingIn(**json_data)
     except Exception as e:
         print(f"[MQTT] Parse error: {e}")
         return
-        
+
     try:
-        conn   = mysql.connector.connect(
-            host=os.environ["DB_HOST"], user=os.environ["DB_USER"],
-            password=os.environ["DB_PASSWORD"], database=os.environ["DB_NAME"]
+        conn = mysql.connector.connect(
+            host=os.environ["DB_HOST"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"],
+            database=os.environ["DB_NAME"],
         )
         cursor = conn.cursor()
 
-        cursor.execute (
+        cursor.execute(
             "INSERT IGNORE INTO devices (mac_address) VALUES (%s)",
-            (reading.mac_address,)
+            (reading.mac_address,),
         )
-
         cursor.execute(
             """INSERT INTO readings
                (mac_address, thermistor_temp, prediction, confidence, pixels)
                VALUES (%s, %s, %s, %s, %s)""",
             (reading.mac_address, reading.thermistor,
              reading.prediction.upper(), reading.confidence,
-             json.dumps(reading.pixels))
+             json.dumps(reading.pixels)),
         )
-
         conn.commit()
         new_id = cursor.lastrowid
         cursor.close()
         conn.close()
         print(f"[DB] Saved reading id={new_id}")
 
+        latest_reading = {
+            "event":        "new_reading",
+            "id":           new_id,
+            "mac_address":  reading.mac_address,
+            "thermistor":   reading.thermistor,
+            "prediction":   reading.prediction.upper(),
+            "confidence":   reading.confidence,
+            "pixels":       reading.pixels,
+        }
+
     except Exception as e:
         print(f"[DB] Insert error: {e}")
-        return
-    
-    # Store prev iformation
-    latest_id = new_id
-    latest_mac = reading.mac_address
          
 
 # Initialize MQTT client
@@ -191,11 +185,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
+VALID_COMMANDS = {"get_one", "start_continuous", "stop"}
 
-### SEEMS the End of how to construct the backend of the API ####
-# Need to fix and ask some tasks of how the verificaiton of data is suppose to happen 
-
-
+# Routes
 
 @app.get("/", response_class=HTMLResponse)
 def root(request: Request):
@@ -212,15 +204,12 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         ws_clients.remove(websocket)
 
-VALID_COMMANDS = {"get_one", "start_continuous", "stop"}
-
 @app.post("/api/command")
 def send_command(body: CommandIn):
     if body.command not in VALID_COMMANDS:
         raise HTTPException(status_code=400, detail=f"Unknown command: {body.command}")
-    if mqtt_client:
-        mqtt_client.publish(MQTT_COMMAND_TOPIC, json.dumps({"command": body.command}))
-        print(f"[CMD] → {body.command}")
+    mqtt_client.publish(MQTT_COMMAND_TOPIC, json.dumps({"command": body.command}))
+    print(f"[CMD] → {body.command}")
     return {"status": "ok", "command": body.command}
 
 @app.post("/api/readings")
@@ -257,7 +246,7 @@ def get_readings(device_mac: Optional[str] = None, conn=Depends(get_db)):
     rows = cursor.fetchall()
     cursor.close()
     for row in rows:
-        row["pixels"]     = json.loads(row["pixels"])
+        row["pixels"]  = json.loads(row["pixels"])
         row["created_at"] = str(row["created_at"])
     return rows
 
@@ -284,4 +273,3 @@ def get_devices(conn=Depends(get_db)):
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
- ### MAybe ###
