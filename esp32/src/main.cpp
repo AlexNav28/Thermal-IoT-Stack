@@ -252,7 +252,7 @@ void sendData(){
 
 
     JsonDocument doc;
-    doc["mac_address"] = wifi.macAddress();
+    doc["mac_address"] = WiFi.macAddress();
     JsonArray pixelsArr = doc["pixels"].to<JsonArray>();
     for (int i = 0; i < AMG88xx_PIXEL_ARRAY_SIZE; i++){
         pixelsArr.add(pixels[i]);
@@ -313,7 +313,7 @@ void setup() {
     //MQTT 
     mqtt.connectToBroker();
      mqtt.setCallback(mqttCallback);          
-    mqtt.subscribe("command");
+    mqtt.subscribeTopic("command");
 
     // TFLite setup
     setupModel();
