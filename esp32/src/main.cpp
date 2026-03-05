@@ -14,10 +14,6 @@
 #include "model_data.h"
 #include "model_params.h"
 
-#include <Arduino.h>
-#include <WiFi.h>
-#include "ECE140_WIFI.h"
-
 #include <string.h>
 #include <ArduinoJson.h>
 
@@ -231,10 +227,10 @@ float runInference(float scaled_features[N_FEATURES]) {
 
     interpreter->Invoke();
 
-    float outupt_scale = output_tensor->params.scale;
+    float output_scale = output_tensor->params.scale;
     int output_zero_point = output_tensor->params.zero_point;
     int8_t raw_output = output_tensor->data.int8[0];
-    float confidence = (raw_output - output_zero_point) * outupt_scale;
+    float confidence = (raw_output - output_zero_point) * output_scale;
 
     return confidence;
 }
@@ -263,7 +259,7 @@ void sendData(){
 
     String jsonString;
     serializeJson(doc, jsonString);
-    mqtt.publishMessage(TOPIC_PREFIX, jsonString);
+    mqtt.publishMessage("data", jsonString);
 }
 
 // MQTT callback
@@ -276,11 +272,15 @@ void mqttCallback(char* topic, uint8_t* payload, unsigned int length){
     Serial.print("[MQTT] Received: ");
     Serial.println(message);
 
-    if(message == "get_one"){
+    JsonDocument doc;
+    deserializeJson(doc, message);
+    String command = doc["command"].as<String>();
+
+    if(command == "get_one"){
         dataRequested = true;
-    } else if (message == "start_continuous") {
+    } else if (command == "start_continuous") {
         automatic = true;
-    } else if (message == "stop") {
+    } else if (command == "stop") {
         automatic = false;
         dataRequested = false;
     } else {Serial.println("Unknown command!");}

@@ -17,11 +17,11 @@ services:
       retries: 10
 
   web:
-    build: .
+    build: ./webserver
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
+      - ./webserver:/app
       - /app/.venv
     environment:
       DB_HOST:        db
