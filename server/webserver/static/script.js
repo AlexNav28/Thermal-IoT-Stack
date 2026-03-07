@@ -1,11 +1,6 @@
 let ws;
-let currentPixels = null;
 let progressChart = null;
-
-function showMessage(msg) {
-    document.getElementById('message').textContent = msg;
-    setTimeout(() => document.getElementById('message').textContent = '', 3000);
-}
+let continuous = false;
 
 function renderHeatmap(pixels) {
     const canvas = document.getElementById('heatmap');
@@ -29,46 +24,6 @@ function renderHeatmap(pixels) {
     }
 }
 
-function updateChart(empty, present) {
-    if (progressChart) {
-        progressChart.data.datasets[0].data = [empty, present];
-        progressChart.update();
-    }
-}
-
-function initChart() {
-    const ctx = document.getElementById('progress-chart').getContext('2d');
-    progressChart = new Chart(ctx, {
-        type: 'bar',
-        data: {
-            labels: ['Empty', 'Present'],
-            datasets: [
-                {
-                    label: 'Collected',
-                    data: [0, 0],
-                    backgroundColor: ['#2ecc71', '#e74c3c']
-                },
-                {
-                    label: 'Target',
-                    data: [50, 50],
-                    backgroundColor: ['rgba(46,204,113,0.2)', 'rgba(231,76,60,0.2)'],
-                    borderColor: ['#2ecc71', '#e74c3c'],
-                    borderWidth: 1
-                }
-            ]
-        },
-        options: {
-            responsive: true,
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    max: 60
-                }
-            }
-        }
-    });
-}
-
 function connect() {
     ws = new WebSocket(`ws://${window.location.host}/ws`);
 
@@ -86,53 +41,115 @@ function connect() {
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
+            if (data.event !== 'new_reading') return;
 
-            currentPixels = data.pixels;
             renderHeatmap(data.pixels);
 
-            document.getElementById('total').textContent = data.stats.total;
-            document.getElementById('empty').textContent = data.stats.empty;
-            document.getElementById('present').textContent = data.stats.present;
+            document.getElementById('thermistor').textContent = data.thermistor != null ? data.thermistor.toFixed(1) : '--';
+            document.getElementById('prediction').textContent = data.prediction || '--';
+            document.getElementById('confidence').textContent = data.confidence != null ? (data.confidence * 100).toFixed(1) + '%' : '--';
+            document.getElementById('mac-display').textContent = data.mac_address || '--';
 
-            updateChart(data.stats.empty, data.stats.present);
-
+            prependRow(data);
         } catch (e) {
             console.error('Failed to parse message:', e);
         }
     };
 }
 
-async function collect(labelType) {
-    if (!currentPixels) {
-        showMessage('No incoming pixels');
-        return;
-    }
-
+async function sendCommand(cmd) {
     try {
-        const response = await fetch('/api/collect', {
+        const response = await fetch('/api/command', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ label: labelType, pixels: currentPixels })
+            body: JSON.stringify({ command: cmd })
         });
-
-        await response.json();
-        if (response.ok) {
-            showMessage('Success');
-            currentPixels = null;
-        } else {
-            showMessage('Error');
-        }
+        showMessage(response.ok ? `Sent: ${cmd}` : `Error ${response.status}`);
     } catch (e) {
-        showMessage('Request failed: ' + e);
+        showMessage('Network error');
     }
 }
 
-document.addEventListener('keydown', (e) => {
-    if (e.key === '0') collect('empty');
-    if (e.key === '1') collect('present');
-});
+async function toggleContinuous() {
+    continuous = !continuous;
+    const btn = document.getElementById('btn-continuous');
+    if (continuous) {
+        btn.textContent = 'Stop Continuous';
+        btn.classList.add('active');
+        await sendCommand('start_continuous');
+    } else {
+        btn.textContent = 'Start Continuous';
+        btn.classList.remove('active');
+        await sendCommand('stop');
+    }
+}
+
+// ── History table ─────────────────────────────────────────────────────────────
+async function loadReadings() {
+    const mac = document.getElementById('mac-filter').value.trim();
+    const url = mac ? `/api/readings?device_mac=${encodeURIComponent(mac)}` : '/api/readings';
+    const rows = await (await fetch(url)).json();
+
+    const tbody = document.getElementById('readings-tbody');
+    tbody.innerHTML = '';
+    document.getElementById('no-data').style.display = rows.length ? 'none' : 'block';
+    rows.forEach(r => tbody.appendChild(buildRow(r)));
+}
+
+function buildRow(data) {
+    const pred = (data.prediction || '').toUpperCase();
+    const tr = document.createElement('tr');
+    tr.id = `row-${data.id}`;
+    tr.innerHTML = `
+        <td>#${data.id}</td>
+        <td>${data.mac_address}</td>
+        <td>${data.thermistor_temp != null ? Number(data.thermistor_temp).toFixed(2) : data.thermistor != null ? Number(data.thermistor).toFixed(2) : '--'}</td>
+        <td class="pred ${pred === 'PRESENT' ? 'present' : 'empty'}">${pred}</td>
+        <td>${data.confidence != null ? (data.confidence * 100).toFixed(1) + '%' : '--'}</td>
+        <td>${data.created_at ? data.created_at.slice(0, 19) : new Date().toISOString().slice(0, 19)}</td>
+        <td><button class="del" onclick="deleteReading(${data.id})">✕</button></td>
+    `;
+    tr.addEventListener('click', (e) => {
+        if (e.target.classList.contains('del')) return;
+        if (data.pixels && data.pixels.length === 64) renderHeatmap(data.pixels);
+    });
+    return tr;
+}
+
+function prependRow(data) {
+    const tbody = document.getElementById('readings-tbody');
+    tbody.prepend(buildRow(data));
+    document.getElementById('no-data').style.display = 'none';
+    const tr = document.getElementById(`row-${data.id}`);
+    if (tr) {
+        tr.classList.add('flash');
+        setTimeout(() => tr.classList.remove('flash'), 1500);
+    }
+}
+
+async function deleteReading(id) {
+    const r = await fetch(`/api/readings/${id}`, { method: 'DELETE' });
+    if (r.ok) {
+        document.getElementById(`row-${id}`)?.remove();
+        const tbody = document.getElementById('readings-tbody');
+        if (!tbody.children.length) document.getElementById('no-data').style.display = 'block';
+    }
+}
+
+function clearFilter() {
+    document.getElementById('mac-filter').value = '';
+    loadReadings();
+}
+
+let msgTimer;
+function showMessage(msg) {
+    const el = document.getElementById('message');
+    el.textContent = msg;
+    clearTimeout(msgTimer);
+    msgTimer = setTimeout(() => el.textContent = '', 3000);
+}
 
 document.addEventListener('DOMContentLoaded', () => {
-    initChart();
     connect();
+    loadReadings();
 });

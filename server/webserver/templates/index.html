@@ -1,37 +1,60 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Collection Dashboard</title>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Thermal Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-    <h1>Collection Dashboard</h1>
 
-    <div id="status">Connecting...</div>
+<h1>AMG8833 Thermal Dashboard</h1>
+<div id="status">Disconnected</div>
 
-    <div id="stats">
-        <div class="stat">Total: <span id="total">0</span></div>
-        <div class="stat">Empty: <span id="empty">0</span>/50</div>
-        <div class="stat">Present: <span id="present">0</span>/50</div>
-    </div>
+<div id="main-content">
+    <div id="heatmap-container">
+        <canvas id="heatmap" width="240" height="240"></canvas>
 
-    <div id="main-content">
-        <div id="heatmap-container">
-            <canvas id="heatmap" width="240" height="240"></canvas>
-            <div id="controls">
-                <button id="btn-empty" onclick="collect('empty')">Empty (0)</button>
-                <button id="btn-present" onclick="collect('present')">Present (1)</button>
-            </div>
+        <div id="sensor-info">
+            <p>Thermistor: <span id="thermistor">--</span> °C</p>
+            <p>Prediction: <span id="prediction">--</span></p>
+            <p>Confidence: <span id="confidence">--</span></p>
+            <p>MAC: <span id="mac-display">--</span></p>
         </div>
 
-        <div id="chart-container">
-            <canvas id="progress-chart"></canvas>
+        <div id="controls">
+            <button onclick="sendCommand('get_one')">Get One</button>
+            <button id="btn-continuous" onclick="toggleContinuous()">Start Continuous</button>
+            <button onclick="sendCommand('stop')">Stop</button>
         </div>
+        <div id="message"></div>
     </div>
 
-    <div id="message"></div>
+    <div id="history">
+        <h2>Stored Readings</h2>
+        <div id="filter-bar">
+            <input type="text" id="mac-filter" placeholder="Filter by MAC"/>
+            <button onclick="loadReadings()">Filter</button>
+            <button onclick="clearFilter()">Clear</button>
+        </div>
+        <table id="readings-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>MAC</th>
+                    <th>Temp (°C)</th>
+                    <th>Prediction</th>
+                    <th>Confidence</th>
+                    <th>Time</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="readings-tbody"></tbody>
+        </table>
+        <p id="no-data" style="display:none;">No readings yet.</p>
+    </div>
+</div>
 
-    <script src="{{ url_for('static', path='script.js') }}"></script>
+<script src="{{ url_for('static', path='script.js') }}"></script>
 </body>
 </html>
