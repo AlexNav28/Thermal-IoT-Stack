@@ -10,12 +10,14 @@ import paho.mqtt.client as mqtt
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Request, Cookie, Form 
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+import bcrypt
+import uuid
 
 
 load_dotenv()
@@ -40,6 +42,10 @@ class ReadingIn(BaseModel):
 class CommandIn(BaseModel):
     command: str
 
+class UserIn(BaseModel):
+    username: str
+    password: str
+  
 
 # Database
 
@@ -54,6 +60,22 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
+# Get current user
+def get_current_user(session_token: str | None = Cookie(None), conn=Depends(get_db)):
+    if not session_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT users.id, users.username FROM sessions "
+        "JOIN users ON sessions.user_id = users.id "
+        "WHERE sessions.session_token = %s", (session_token,),
+    )
+    user = cursor.fetchone()
+    cursor.close()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return user  
 
 # Websocket 
 
@@ -192,8 +214,76 @@ VALID_COMMANDS = {"get_one", "start_continuous", "stop"}
 # Routes
 
 @app.get("/", response_class=HTMLResponse)
-def root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+def root(request: Request, session_token: str | None = Cookie(None), conn=Depends(get_db)):
+    if session_token:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT users.id FROM sessions "
+            "JOIN users ON sessions.user_id = users.id "
+            "WHERE sessions.session_token = %s",
+            (session_token,),
+        )
+        user = cursor.fetchone()
+        cursor.close()
+        if user:
+            return templates.TemplateResponse("index.html", {"request": request})
+    return RedirectResponse(url="/login", status_code=303)
+
+@app.get("/register", response_class=HTMLResponse)
+def register_page(request: Request):
+    return templates.TemplateResponse("register.html", {"request": request})
+
+@app.post("/register")
+def register(username: str = Form(...), password: str = Form(...), conn=Depends(get_db)):
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+            (username, hashed.decode()),
+        )
+        conn.commit()
+    except mysql.connector.IntegrityError:
+        cursor.close()
+        raise HTTPException(status_code=409, detail="Username already exists")
+    user_id = cursor.lastrowid
+    session_token = str(uuid.uuid4())
+    cursor.execute(
+        "INSERT INTO sessions (user_id, session_token) VALUES (%s, %s)",
+        (user_id, session_token),
+    )
+    conn.commit()
+    cursor.close()
+    response = RedirectResponse(url="/login", status_code=303)
+    response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True)
+    return response
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.post("/login")
+def login(username: str = Form(...), password: str = Form(...), conn=Depends(get_db)):
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM users WHERE username = %s", (username,))
+    user = cursor.fetchone()
+
+    if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+        cursor.close()
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    session_token = str(uuid.uuid4())
+    cursor.execute(
+        "INSERT INTO sessions (user_id, session_token) VALUES (%s, %s)",
+        (user["id"], session_token),
+    )
+
+    conn.commit()
+    cursor.close()
+
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True)
+    return response
 
 
 @app.websocket("/ws")
@@ -207,7 +297,7 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_clients.remove(websocket)
 
 @app.post("/api/command")
-def send_command(body: CommandIn):
+def send_command(body: CommandIn, current_user=Depends(get_current_user)):
     if body.command not in VALID_COMMANDS:
         raise HTTPException(status_code=400, detail=f"Unknown command: {body.command}")
     mqtt_client.publish(MQTT_COMMAND_TOPIC, json.dumps({"command": body.command}))
@@ -215,7 +305,7 @@ def send_command(body: CommandIn):
     return {"status": "ok", "command": body.command}
 
 @app.post("/api/readings")
-def create_reading(body: ReadingIn, conn=Depends(get_db)):
+def create_reading(body: ReadingIn, conn=Depends(get_db), current_user=Depends(get_current_user)):
     cursor = conn.cursor()
     cursor.execute(
         "INSERT IGNORE INTO devices (mac_address) VALUES (%s)",
@@ -236,7 +326,7 @@ def create_reading(body: ReadingIn, conn=Depends(get_db)):
 
 
 @app.get("/api/readings")
-def get_readings(device_mac: Optional[str] = None, conn=Depends(get_db)):
+def get_readings(device_mac: Optional[str] = None, conn=Depends(get_db), current_user=Depends(get_current_user)):
     cursor = conn.cursor(dictionary=True)
     if device_mac:
         cursor.execute(
@@ -253,7 +343,7 @@ def get_readings(device_mac: Optional[str] = None, conn=Depends(get_db)):
     return rows
 
 @app.delete("/api/readings/{reading_id}")
-def delete_reading(reading_id: int, conn=Depends(get_db)):
+def delete_reading(reading_id: int, conn=Depends(get_db), current_user=Depends(get_current_user)):
     cursor = conn.cursor()
     cursor.execute("DELETE FROM readings WHERE id = %s", (reading_id,))
     conn.commit()
@@ -264,7 +354,7 @@ def delete_reading(reading_id: int, conn=Depends(get_db)):
     return {"status": "deleted", "id": reading_id}
 
 @app.get("/api/devices")
-def get_devices(conn=Depends(get_db)):
+def get_devices(conn=Depends(get_db), current_user=Depends(get_current_user)):
     cursor = conn.cursor(dictionary=True)
     cursor.execute("SELECT * FROM devices ORDER BY id")
     devices = cursor.fetchall()
@@ -272,6 +362,76 @@ def get_devices(conn=Depends(get_db)):
     for d in devices:
         d["created_at"] = str(d["created_at"])
     return devices
+
+
+## TA 9
+@app.post("/api/register")
+def create_user(body: UserIn, conn=Depends(get_db)):
+    hashed = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt())
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password_hash) VALUES (%s, %s)",
+            (body.username, hashed.decode()),
+        )
+        conn.commit()
+
+    except mysql.connector.IntegrityError:
+        cursor.close()
+        raise HTTPException(status_code=409, detail="Username already exists")
+    user_id = cursor.lastrowid
+    session_token = str(uuid.uuid4())
+    cursor.execute(
+        "INSERT INTO sessions (user_id, session_token) VALUES (%s, %s)",
+        (user_id, session_token),
+    )
+    conn.commit()
+    cursor.close()
+
+    response = JSONResponse(
+        status_code=201,
+        content={"message": "User created", "username": body.username})
+    response.set_cookie(key="session_token", value=session_token, httponly=True)
+    return response
+
+@app.post("/api/login")
+def login_user(body: UserIn, conn=Depends(get_db)):
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM users WHERE username = %s", (body.username,))
+    user = cursor.fetchone()
+
+    if not user or not bcrypt.checkpw(body.password.encode(), user["password_hash"].encode()):
+        cursor.close()
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    session_token = str(uuid.uuid4())
+    cursor.execute(
+        "INSERT INTO sessions (user_id, session_token) VALUES (%s, %s)",
+        (user["id"], session_token),
+    )
+
+    conn.commit()
+    cursor.close()
+
+    response = JSONResponse(
+        status_code=200,
+        content={"message": "Login successful", "username": user["username"]})
+    response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True)
+    return response
+
+
+@app.post("/api/logout")
+def logout(session_token: str | None = Cookie(None), conn=Depends(get_db)):
+    if session_token:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM sessions WHERE session_token = %s", (session_token,))
+        conn.commit()
+        cursor.close()
+    response = JSONResponse(content={"message": "Logged out"})
+    response.delete_cookie("session_token")
+    return response
+
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
