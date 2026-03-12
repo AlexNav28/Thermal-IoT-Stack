@@ -8,7 +8,37 @@
 </head>
 <body>
 
-<h1>AMG8833 Thermal Dashboard</h1>
+<!-- AUTH SECTION -->
+<div id="auth-section">
+    <h1>AMG8833 Thermal Dashboard</h1>
+
+    <div id="login-form" class="auth-box">
+        <h2>Login</h2>
+        <input type="text" id="username" placeholder="Username"/>
+        <input type="password" id="password" placeholder="Password"/>
+        <button onclick="login()">Login</button>
+        <p id="login-error" style="color:#f85149; display:none;"></p>
+        <p>No account? <span class="auth-link" onclick="showRegister()">Register</span></p>
+    </div>
+
+    <div id="register-form" class="auth-box" style="display:none;">
+        <h2>Register</h2>
+        <input type="text" id="reg-username" placeholder="Username"/>
+        <input type="password" id="reg-password" placeholder="Password"/>
+        <button onclick="register()">Register</button>
+        <p id="register-error" style="color:#f85149; display:none;"></p>
+        <p>Have an account? <span class="auth-link" onclick="showLogin()">Login</span></p>
+    </div>
+</div>
+
+<!-- DASHBOARD SECTION -->
+<div id="dashboard-section" style="display:none;">
+
+    <div id="top-bar">
+        <h1>AMG8833 Thermal Dashboard</h1>
+        <button id="logout-btn" onclick="logout()">Logout</button>
+    </div>
+
 <div id="status">Disconnected</div>
 
 <div id="main-content">

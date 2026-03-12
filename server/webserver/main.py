@@ -231,7 +231,7 @@ def root(request: Request, session_token: str | None = Cookie(None), conn=Depend
 
 @app.get("/register", response_class=HTMLResponse)
 def register_page(request: Request):
-    return templates.TemplateResponse("register.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/register")
 def register(username: str = Form(...), password: str = Form(...), conn=Depends(get_db)):
@@ -255,12 +255,12 @@ def register(username: str = Form(...), password: str = Form(...), conn=Depends(
     conn.commit()
     cursor.close()
     response = RedirectResponse(url="/login", status_code=303)
-    response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True)
+    response.set_cookie(key="session_token", value=session_token, httponly=True)
     return response
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/login")
 def login(username: str = Form(...), password: str = Form(...), conn=Depends(get_db)):
@@ -282,12 +282,27 @@ def login(username: str = Form(...), password: str = Form(...), conn=Depends(get
     cursor.close()
 
     response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True)
+    response.set_cookie(key="session_token", value=session_token, httponly=True)
     return response
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str | None = None, conn=Depends(get_db)):
+    # Accept token from query param (?token=...) or cookie fallback
+    session_token = token or websocket.cookies.get("session_token")
+    if not session_token:
+        await websocket.close(code=1008)
+        return
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT users.id FROM sessions JOIN users ON sessions.user_id = users.id "
+        "WHERE sessions.session_token = %s", (session_token,)
+    )
+    user = cursor.fetchone()
+    cursor.close()
+    if not user:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     ws_clients.append(websocket)
     try:
@@ -416,7 +431,7 @@ def login_user(body: UserIn, conn=Depends(get_db)):
     response = JSONResponse(
         status_code=200,
         content={"message": "Login successful", "username": user["username"]})
-    response.set_cookie(key="session_token", value=session_token, httponly=True, secure=True)
+    response.set_cookie(key="session_token", value=session_token, httponly=True)
     return response
 
 

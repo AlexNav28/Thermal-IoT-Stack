@@ -2,6 +2,85 @@ let ws;
 let progressChart = null;
 let continuous = false;
 
+// Authotification
+function showRegister() {
+    document.getElementById('login-form').style.display = 'none';
+    document.getElementById('register-form').style.display = 'block';
+}
+
+function showLogin() {
+    document.getElementById('register-form').style.display = 'none';
+    document.getElementById('login-form').style.display = 'block';
+}
+
+function showDashboard() {
+    document.getElementById('auth-section').style.display = 'none';
+    document.getElementById('dashboard-section').style.display = 'block';
+    connect();
+    loadReadings();
+}
+
+function showAuth() {
+    document.getElementById('dashboard-section').style.display = 'none';
+    document.getElementById('auth-section').style.display = 'block';
+    showLogin();
+    if (ws) {
+        ws.onclose = null;  
+        ws.close();
+        ws = null;
+    }
+}
+
+async function login() {
+    const username = document.getElementById('username').value;
+    const password = document.getElementById('password').value;
+    const error = document.getElementById('login-error');
+
+    const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+    });
+
+    if (response.ok) {
+        error.style.display = 'none';
+        showDashboard();
+    } else {
+        error.textContent = 'Invalid username or password';
+        error.style.display = 'block';
+    }
+}
+
+async function register() {
+    const username = document.getElementById('reg-username').value;
+    const password = document.getElementById('reg-password').value;
+    const error = document.getElementById('register-error');
+
+    const response = await fetch('/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+    });
+
+    if (response.ok) {
+        error.style.display = 'none';
+        showDashboard();
+    } else {
+        error.textContent = response.status === 409 ? 'Username already exists' : 'Registration failed';
+        error.style.display = 'block';
+    }
+}
+
+async function logout() {
+     await fetch('/api/logout', { method: 'POST' });
+    if (ws) ws.close();
+    showAuth();
+}
+
+
+
+// -- Websocket
+
 function renderHeatmap(pixels) {
     const canvas = document.getElementById('heatmap');
     const ctx = canvas.getContext('2d');
@@ -25,7 +104,8 @@ function renderHeatmap(pixels) {
 }
 
 function connect() {
-    ws = new WebSocket(`ws://${window.location.host}/ws`);
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
 
     ws.onopen = () => {
         document.getElementById('status').textContent = 'Connected';
@@ -35,7 +115,7 @@ function connect() {
     ws.onclose = () => {
         document.getElementById('status').textContent = 'Disconnected';
         document.getElementById('status').className = 'disconnected';
-        setTimeout(connect, 1000);
+       setTimeout(connect, 1000);
     };
 
     ws.onmessage = (event) => {
@@ -56,6 +136,7 @@ function connect() {
         }
     };
 }
+
 
 async function sendCommand(cmd) {
     try {
@@ -84,7 +165,7 @@ async function toggleContinuous() {
     }
 }
 
-// ── History table ─────────────────────────────────────────────────────────────
+// -- History table
 async function loadReadings() {
     const mac = document.getElementById('mac-filter').value.trim();
     const url = mac ? `/api/readings?device_mac=${encodeURIComponent(mac)}` : '/api/readings';
@@ -149,7 +230,11 @@ function showMessage(msg) {
     msgTimer = setTimeout(() => el.textContent = '', 3000);
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    connect();
-    loadReadings();
+document.addEventListener('DOMContentLoaded', async () => {
+    const response = await fetch('/api/readings');
+    if (response.ok) {
+        showDashboard();  
+    } else {
+        showAuth();       
+    }
 });
