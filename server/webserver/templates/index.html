@@ -3,31 +3,49 @@
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Thermal Dashboard</title>
+    <title>AMG8833 Thermal Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
 </head>
 <body>
 
 <!-- AUTH SECTION -->
 <div id="auth-section">
-    <h1>AMG8833 Thermal Dashboard</h1>
+    <div class="auth-container">
+        <div class="auth-brand">
+            <div class="auth-brand-icon">&#127777;</div>
+            <h1>AMG8833</h1>
+            <p>Thermal Imaging Dashboard</p>
+        </div>
 
-    <div id="login-form" class="auth-box">
-        <h2>Login</h2>
-        <input type="text" id="username" placeholder="Username"/>
-        <input type="password" id="password" placeholder="Password"/>
-        <button onclick="login()">Login</button>
-        <p id="login-error" style="color:#f85149; display:none;"></p>
-        <p>No account? <span class="auth-link" onclick="showRegister()">Register</span></p>
-    </div>
+        <div id="login-form" class="auth-box">
+            <h2>Sign In</h2>
+            <div class="input-group">
+                <label>Username</label>
+                <input type="text" id="username" placeholder="Enter username" autocomplete="username"/>
+            </div>
+            <div class="input-group">
+                <label>Password</label>
+                <input type="password" id="password" placeholder="Enter password" autocomplete="current-password"/>
+            </div>
+            <button class="btn-primary" onclick="login()">Sign In</button>
+            <p id="login-error" class="form-error" style="display:none;"></p>
+            <p class="auth-switch">No account? <span class="auth-link" onclick="showRegister()">Register</span></p>
+        </div>
 
-    <div id="register-form" class="auth-box" style="display:none;">
-        <h2>Register</h2>
-        <input type="text" id="reg-username" placeholder="Username"/>
-        <input type="password" id="reg-password" placeholder="Password"/>
-        <button onclick="register()">Register</button>
-        <p id="register-error" style="color:#f85149; display:none;"></p>
-        <p>Have an account? <span class="auth-link" onclick="showLogin()">Login</span></p>
+        <div id="register-form" class="auth-box" style="display:none;">
+            <h2>Create Account</h2>
+            <div class="input-group">
+                <label>Username</label>
+                <input type="text" id="reg-username" placeholder="Choose a username" autocomplete="username"/>
+            </div>
+            <div class="input-group">
+                <label>Password</label>
+                <input type="password" id="reg-password" placeholder="Choose a password" autocomplete="new-password"/>
+            </div>
+            <button class="btn-primary" onclick="register()">Create Account</button>
+            <p id="register-error" class="form-error" style="display:none;"></p>
+            <p class="auth-switch">Have an account? <span class="auth-link" onclick="showLogin()">Sign In</span></p>
+        </div>
     </div>
 </div>
 
@@ -35,55 +53,113 @@
 <div id="dashboard-section" style="display:none;">
 
     <div id="top-bar">
-        <h1>AMG8833 Thermal Dashboard</h1>
-        <button id="logout-btn" onclick="logout()">Logout</button>
+        <div class="top-bar-left">
+            <span class="top-bar-icon">&#127777;</span>
+            <h1>AMG8833 Thermal Dashboard</h1>
+        </div>
+        <div class="top-bar-right">
+            <div id="status" class="disconnected">
+                <span class="status-dot"></span>
+                <span id="status-text">Disconnected</span>
+            </div>
+            <button id="logout-btn" onclick="logout()">Logout</button>
+        </div>
     </div>
 
-<div id="status">Disconnected</div>
-
-<div id="main-content">
-    <div id="heatmap-container">
-        <canvas id="heatmap" width="240" height="240"></canvas>
-
-        <div id="sensor-info">
-            <p>Thermistor: <span id="thermistor">--</span> °C</p>
-            <p>Prediction: <span id="prediction">--</span></p>
-            <p>Confidence: <span id="confidence">--</span></p>
-            <p>MAC: <span id="mac-display">--</span></p>
+    <div id="stats-bar">
+        <div class="stat-card">
+            <span class="stat-label">Total Readings</span>
+            <span class="stat-value" id="stat-total">0</span>
         </div>
-
-        <div id="controls">
-            <button onclick="sendCommand('get_one')">Get One</button>
-            <button id="btn-continuous" onclick="toggleContinuous()">Start Continuous</button>
-            <button onclick="sendCommand('stop')">Stop</button>
+        <div class="stat-card">
+            <span class="stat-label">Human Detections</span>
+            <span class="stat-value green" id="stat-present">0</span>
         </div>
-        <div id="message"></div>
+        <div class="stat-card">
+            <span class="stat-label">Detection Rate</span>
+            <span class="stat-value" id="stat-rate">--%</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Avg Temp</span>
+            <span class="stat-value" id="stat-avg">-- °C</span>
+        </div>
     </div>
 
-    <div id="history">
-        <h2>Stored Readings</h2>
-        <div id="filter-bar">
-            <input type="text" id="mac-filter" placeholder="Filter by MAC"/>
-            <button onclick="loadReadings()">Filter</button>
-            <button onclick="clearFilter()">Clear</button>
+    <div id="main-content">
+        <div id="heatmap-container">
+            <div class="section-label">Live Thermal View</div>
+            <div class="heatmap-wrapper">
+                <canvas id="heatmap" width="240" height="240"></canvas>
+                <div class="temp-scale">
+                    <span id="temp-max" class="temp-scale-label">--</span>
+                    <div class="temp-gradient"></div>
+                    <span id="temp-min" class="temp-scale-label">--</span>
+                </div>
+            </div>
+
+            <div id="sensor-info">
+                <div class="info-item">
+                    <span class="info-label">Thermistor</span>
+                    <span class="info-value" id="thermistor">--</span>
+                    <span class="info-unit">°C</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Prediction</span>
+                    <span class="info-value" id="prediction">--</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Confidence</span>
+                    <span class="info-value" id="confidence">--</span>
+                </div>
+                <div class="info-item info-item-wide">
+                    <span class="info-label">MAC Address</span>
+                    <span class="info-value mono" id="mac-display">--</span>
+                </div>
+            </div>
+
+            <div id="controls">
+                <button onclick="sendCommand('get_one')">Get One</button>
+                <button id="btn-continuous" onclick="toggleContinuous()">Start Continuous</button>
+                <button class="btn-stop" onclick="sendCommand('stop')">Stop</button>
+            </div>
+            <div id="message"></div>
         </div>
-        <table id="readings-table">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>MAC</th>
-                    <th>Temp (°C)</th>
-                    <th>Prediction</th>
-                    <th>Confidence</th>
-                    <th>Time</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody id="readings-tbody"></tbody>
-        </table>
-        <p id="no-data" style="display:none;">No readings yet.</p>
+
+        <div id="history">
+            <div class="history-header">
+                <div class="history-title">
+                    <span class="section-label">Stored Readings</span>
+                    <span id="row-count" class="badge">0</span>
+                </div>
+                <div id="filter-bar">
+                    <input type="text" id="mac-filter" placeholder="Filter by MAC address..."/>
+                    <button onclick="loadReadings()">Filter</button>
+                    <button onclick="clearFilter()">Clear</button>
+                </div>
+            </div>
+            <div class="table-scroll">
+                <table id="readings-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>MAC</th>
+                            <th>Temp (°C)</th>
+                            <th>Prediction</th>
+                            <th>Confidence</th>
+                            <th>Time</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="readings-tbody"></tbody>
+                </table>
+            </div>
+            <p id="no-data" style="display:none;">No readings found.</p>
+        </div>
     </div>
+
 </div>
+
+<div id="toast-container"></div>
 
 <script src="{{ url_for('static', path='script.js') }}"></script>
 </body>
